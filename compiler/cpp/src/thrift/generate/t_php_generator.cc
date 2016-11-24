@@ -451,7 +451,20 @@ void t_php_generator::close_generator() {
  * @param ttypedef The type definition
  */
 void t_php_generator::generate_typedef(t_typedef* ttypedef) {
-  (void)ttypedef;
+  // (void)ttypedef;
+  std::ofstream& f_typedef = f_types_;
+  if (psr4_) {
+    string f_typedef_name = package_dir_ + ttypedef->get_name() + ".php";
+    f_typedef.open(f_typedef_name.c_str());
+    generate_program_header(f_typedef);
+  }
+
+  // generate_php_doc(f_typedef, ttypedef);
+  f_typedef << "class_alias(\"" << ttypedef->get_type()->get_name() << "\", \"" << ttypedef->get_name() << "\", true);" << endl;
+
+  if (psr4_) {
+    f_typedef.close();
+  }
 }
 
 /**
