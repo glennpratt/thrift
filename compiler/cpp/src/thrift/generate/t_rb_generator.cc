@@ -26,6 +26,7 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <list>
 
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -238,11 +239,19 @@ private:
   std::string namespace_dir_;
   std::string require_prefix_;
 
+  std::map<std::string, int> types_known;
+  std::list<t_struct*> structs_pending;
+
   /** If true, add a "require 'rubygems'" line to the top of each gen-rb file. */
   bool require_rubygems_;
 
   /** If true, generate files in idiomatic namespaced directories. */
   bool namespaced_;
+
+  bool is_fully_defined_type(t_type* ttype);
+  bool all_members_defined(t_struct* tstruct);
+  void add_defined_type(t_type* ttype);
+  void init_known_types_list();
 };
 
 /**
@@ -252,6 +261,8 @@ private:
  * @param tprogram The program to generate
  */
 void t_rb_generator::init_generator() {
+  // init_known_types_list();
+
   string subdir = get_out_dir();
 
   // Make output directory
@@ -286,6 +297,30 @@ void t_rb_generator::init_generator() {
   f_consts_ << rb_autogen_comment() << endl << render_require_thrift() << "require '"
             << require_prefix_ << underscore(program_name_) << "_types'" << endl << endl;
   begin_namespace(f_consts_, ruby_modules(program_));
+}
+
+void t_rb_generator::add_defined_type(t_type* ttype) {
+  // mark as known type
+  types_known[full_type_name(ttype)] = 1;
+
+  // check all pending
+  std::list<t_struct*>::iterator iter;
+  bool more = true;
+  while (more && (!structs_pending.empty())) {
+    more = false;
+
+    for (iter = structs_pending.begin(); structs_pending.end() != iter; ++iter) {
+      t_struct* tstruct = (*iter);
+      if (all_members_defined(tstruct)) {
+        pverbose("NOTICE struct %s: all pending references are now resolved\n",
+                 type_name(tstruct).c_str());
+        structs_pending.erase(iter);
+        generate_struct(tstruct);
+        more = true;
+        break;
+      }
+    }
+  }
 }
 
 /**
@@ -339,6 +374,37 @@ void t_rb_generator::close_generator() {
   end_namespace(f_consts_, ruby_modules(program_));
   f_types_.close();
   f_consts_.close();
+}
+
+bool t_rb_generator::is_fully_defined_type(t_type* ttype) {
+  if ((NULL != ttype->get_program()) && (ttype->get_program() != program_)) {
+    t_scope* scope = ttype->get_program()->scope();
+    if (NULL != scope->get_type(ttype->get_name())) {
+      // printf("type %s found in included scope %s\n", ttype->get_name().c_str(),
+      // ttype->get_program()->get_name().c_str());
+      return true;
+    }
+  }
+
+  if (ttype->is_base_type()) {
+    return true;
+  }
+
+  return (1 == types_known[full_type_name(ttype)]);
+}
+
+bool t_rb_generator::all_members_defined(t_struct* tstruct) {
+  const vector<t_field*>& fields = tstruct->get_members();
+  vector<t_field*>::const_iterator f_iter;
+
+  for (f_iter = fields.begin(); f_iter != fields.end(); ++f_iter) {
+    if (!is_fully_defined_type((*f_iter)->get_type())) {
+      pverbose("NOTICE %s: field type not yet written\n", type_name((*f_iter)->get_type()).c_str());
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -398,6 +464,7 @@ void t_rb_generator::generate_enum(t_enum* tenum) {
 
   f_types_.indent_down();
   f_types_.indent() << "end" << endl << endl;
+  add_defined_type(tenum);
 }
 
 /**
@@ -412,6 +479,7 @@ void t_rb_generator::generate_const(t_const* tconst) {
 
   f_consts_.indent() << name << " = ";
   render_const_value(f_consts_, type, value) << endl << endl;
+  add_defined_type(type);
 }
 
 /**
@@ -522,11 +590,19 @@ t_rb_ofstream& t_rb_generator::render_const_value(t_rb_ofstream& out,
  * Generates a ruby struct
  */
 void t_rb_generator::generate_struct(t_struct* tstruct) {
+  if (!all_members_defined(tstruct)) {
+    pverbose("NOTICE %s: unresolved dependencies found\n", type_name(tstruct).c_str());
+    structs_pending.push_back(tstruct);
+    return;
+  }
   if (tstruct->is_union()) {
     generate_rb_union(f_types_, tstruct, false);
+  } else if (tstruct->is_xception()) {
+    generate_rb_struct(f_types_, tstruct, true);
   } else {
     generate_rb_struct(f_types_, tstruct, false);
   }
+  add_defined_type(tstruct);
 }
 
 /**
@@ -536,7 +612,7 @@ void t_rb_generator::generate_struct(t_struct* tstruct) {
  * @param txception The struct definition
  */
 void t_rb_generator::generate_xception(t_struct* txception) {
-  generate_rb_struct(f_types_, txception, true);
+  generate_struct(txception);
 }
 
 /**
